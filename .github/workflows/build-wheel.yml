@@ -1,0 +1,45 @@
+name: build-wheel
+
+# Compiles onnxruntime-gpu for sm_50 and attaches the wheel to a release.
+# Run manually; only needed when the ORT version or the patches change.
+on:
+  workflow_dispatch:
+    inputs:
+      ort_tag:
+        description: onnxruntime git tag
+        default: v1.18.1
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          df -h /
+      - name: Build builder image
+        run: docker build -f docker/Dockerfile.builder -t ort-builder docker
+      - name: Compile onnxruntime
+        env:
+          ORT_TAG: ${{ inputs.ort_tag }}
+        run: |
+          mkdir -p work out
+          docker run --rm -e ORT_TAG -e JOBS=4 \
+            -v "$PWD/work:/work" -v "$PWD/out:/out" \
+            -v "$PWD/docker/build-ort.sh:/build-ort.sh:ro" \
+            ort-builder bash /build-ort.sh
+      - name: Publish wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORT_TAG: ${{ inputs.ort_tag }}
+        run: |
+          tag="ort-${ORT_TAG}-sm50"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "onnxruntime-gpu ${ORT_TAG} (sm_50)" \
+              --notes "onnxruntime-gpu ${ORT_TAG}, CUDA 11.8, cuDNN 8.9, compiled for compute capability 5.0, Python 3.11."
+          gh release upload "$tag" out/*.whl --clobber
